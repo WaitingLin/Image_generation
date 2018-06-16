@@ -1,35 +1,33 @@
 import tensorflow as tf
 import numpy as np
-import datetime
+import os, datetime, random
 import matplotlib.pyplot as plt
-import sys
-import random
-import os
 from tqdm import tqdm
 from PIL import Image
 from PIL import ImageDraw
 
+flags = tf.app.flags
+flags.DEFINE_boolean('debug', False, 'debug mode')
+FLAGS = flags.FLAGS
+
+# GPU Setting 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
 # Parmeter
 Parm = {
+    'training_path': './data_set/faces/',
+    'img_dir': './img/',
+    'model_dir': './model/',
     'batch_size' : 64,
-    'iteration' : 30000,
-    'training_data_num' : 33430,
+    'iteration' : 300,
+    'training_data_num' : 430,
     'g_input_dim' : 100, # Generator input dim
     'pretrain_iter' : 300, # Discrimanator pre-train iteration
-    'd_train_times' : 4 # Discrimanator training times per iteration
+    'd_train_times' : 4, # Discrimanator training times per iteration
 }
-'''
-batch_size = 128
-iteration = 10000
-training_data_num = 33430
-z_dimensions = 100 # Generator input dim
-pretrain_iter = 10 # Discrimanator pre-train iteration
-'''
+Parm['noise_index'] = Parm['iteration'] * Parm['d_train_times']
 
-# Global Variable
 Data = []
 
 def draw_image(row_data, id):
@@ -38,11 +36,11 @@ def draw_image(row_data, id):
     row_data = list(map(tuple, row_data))
     testImg = Image.new( "RGB", (64, 64), (0,0,0))
     testImg.putdata(row_data)
-    testImg.save('./img/'+ str(id) +'.jpg')
+    testImg.save(Parm['img_dir']+ str(id) +'.jpg')
 
 def load_all_img():
     global Data
-    data_path = './data_set/faces/'
+    data_path = Parm['training_path']
     print('Load training data ...')
     for i in tqdm(range(Parm['training_data_num']+1)):
         img = Image.open(data_path+str(i)+'.jpg')
@@ -53,24 +51,21 @@ def load_all_img():
 
 def image_next_batch():
     Img = []
-    for i in range(Parm['batch_size']):
-        img_index = random.randint(0, Parm['training_data_num'])  
-        img = Data[img_index]
-        Img.append(img)
+    if FLAGS.debug == True:
+        data_path = Parm['training_path']
+        for i in range(Parm['batch_size']):
+            img_index = random.randint(0, Parm['training_data_num'])
+            img = Image.open(data_path+str(i)+'.jpg')
+            img = img.resize((64, 64))
+            img = np.array(img)
+            img = (img / 255.) * 2. - 1. # normailize to -1~1
+            Img.append(img)
+    else:
+        for i in range(Parm['batch_size']):
+            img_index = random.randint(0, Parm['training_data_num'])  
+            img = Data[img_index]
+            Img.append(img)
     return np.array(Img)
-
-# for debug
-def d_image_next_batch():
-    data_path = './data_set/faces/'
-    Img = []
-    for i in range(Parm['batch_size']):
-        img_index = random.randint(0, Parm['training_data_num'])
-        img = Image.open(data_path+str(i)+'.jpg')
-        img = img.resize((64, 64))
-        img = np.array(img)
-        img = (img / 255.) * 2. - 1. # normailize to -1~1
-        Img.append(img)
-    return Img
 
 D_var = {
     'd_w1' : tf.get_variable('d_w1', [4, 4, 3, 32], initializer=tf.random_normal_initializer(stddev=0.02)),
@@ -98,10 +93,11 @@ G_var = {
     'g_b5' : tf.get_variable('g_b5', [3], initializer=tf.constant_initializer(0))
 }
 
-def discriminator(images, reuse_variables=None):
+def discriminator(images):
     
     noise = tf.random_normal(shape=tf.shape(images), mean=0.0, stddev=.02, dtype=tf.float32)
-    images = images + noise
+    images = images + noise * Parm['noise_index'] / Parm['iteration']
+    Parm['noise_index'] -= 1
 
     d1 = tf.nn.conv2d(input=images, filter=D_var['d_w1'], strides=[1, 1, 1, 1], padding='SAME')
     d1 = d1 + D_var['d_b1']
@@ -126,7 +122,7 @@ def discriminator(images, reuse_variables=None):
     d5 = tf.reshape(d4, [-1, 4 * 4 * 256])
     d5 = tf.matmul(d5, D_var['d_w5']) + D_var['d_b5']
     d5 = tf.sigmoid(d5)
-    #d5 = tf.tanh(d5)
+    
     return d5
 
 def generator(z):
@@ -157,29 +153,14 @@ def generator(z):
     g5 = tf.nn.conv2d(g4, G_var['g_w5'], strides=[1, 1, 1, 1], padding='SAME')
     g5 = g5 + G_var['g_b5']
     g5 = tf.contrib.layers.batch_norm(g5, epsilon=1e-5)
-    #g5 = tf.sigmoid(g5)
     g5 = tf.nn.tanh(g5)
     
     return g5
 
+
 ''' Load all image '''
-load_all_img() 
-
-
-''' See the fake image we make '''
-print('test img..')
-# Define the plceholder and the graph
-z_placeholder = tf.placeholder(tf.float32, [None, Parm['g_input_dim']])
-# For generator, one image for a batch
-generated_image_output = generator(z_placeholder)
-z_batch = np.random.normal(0, 1, [Parm['batch_size'], Parm['g_input_dim']])
-
-with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
-    generated_image = sess.run(generated_image_output,
-                                feed_dict={z_placeholder: z_batch})
-    draw_image(generated_image[0],0)
-
+if FLAGS.debug == False:
+    load_all_img() 
 
 ''' Training GAN ''' 
 g_input = tf.placeholder(tf.float32, [None, Parm['g_input_dim']], name='g_input') 
@@ -188,10 +169,10 @@ d_input = tf.placeholder(tf.float32, shape = [None,64,64,3], name='d_input')
 G = generator(g_input) 
 Dr = discriminator(d_input) # Real 
 Df = discriminator(G) # Fake
+
 '''
-# Loss function for generator
+# Loss function 
 g_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits = Df, labels = tf.ones_like(Dg)))
-# Two Loss Functions for discriminator
 d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits = Df, labels = tf.ones_like(Dr)))
 d_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits = Df, labels = tf.zeros_like(Dg)))
 '''
@@ -204,10 +185,7 @@ tvars = tf.trainable_variables()
 g_vars = [var for var in tvars if 'g_' in var.name]
 d_vars = [var for var in tvars if 'd_' in var.name]
 
-# Train the generator
 g_trainer = tf.train.AdamOptimizer(0.0002).minimize(g_loss, var_list=g_vars)
-
-# Train the discriminator
 #d_trainer_fake = tf.train.AdamOptimizer(0.0002).minimize(d_loss_fake, var_list=d_vars)
 #d_trainer_real = tf.train.AdamOptimizer(0.0002).minimize(d_loss_real, var_list=d_vars)
 d_trainer = tf.train.AdamOptimizer(0.0002).minimize(d_loss, var_list=d_vars)
@@ -219,7 +197,6 @@ optimizer_disc = tf.train.AdamOptimizer(learning_rate=0.0002)
 g_trainer = optimizer_gen.minimize(g_loss, var_list=g_vars)
 d_trainer = optimizer_disc.minimize(d_loss, var_list=d_vars)
 '''
-
 
 ''' Start Training '''
 config = tf.ConfigProto()
@@ -238,10 +215,6 @@ for i in tqdm(range(Parm['pretrain_iter'])):
     disc_feed_dict = {d_input: real_image_batch, g_input: g_input_batch}
     _, dLoss = sess.run([d_trainer, d_loss], feed_dict = disc_feed_dict)
 
-    #if(i % 100 == 0):
-        #print("dLoss:", dLoss)
-
-# Train generator and discriminator together
 print('Start training...')
 for i in tqdm(range(Parm['iteration'])):
     # Train discriminator
@@ -257,16 +230,16 @@ for i in tqdm(range(Parm['iteration'])):
     g_input_batch = np.random.normal(0., 1., size=[Parm['batch_size'], Parm['g_input_dim']])
     _, gLoss = sess.run([g_trainer, g_loss], feed_dict={g_input: g_input_batch})
 
-    if i % 500 == 0 and i >= 200000:
-        save_path = saver.save(sess, "./model/model{}.ckpt".format(i))
-        #print("Model saved in file: %s" % save_path)
-    
-    if i % 100 == 0 and i >= 200000:
-        # Every 100 iterations, show a generated image
+    if i % 500 == 0 and i >= 20000:
+        save_path = saver.save(sess, Parm['model_dir']+'model{}.ckpt'.format(i))
+    if i % 1000 == 0 and i < 20000:
+        g_input_batch = np.random.normal(0., 1., size=[Parm['batch_size'],  Parm['g_input_dim']])
+        images = sess.run(G, {g_input: g_input_batch})
+        draw_image(images[0],i)
+    if i % 100 == 0 and i >= 20000:
         #print('Iteration:', i, 'at', datetime.datetime.now())
         #print('dLoss', dLoss, ', gLoss:', gLoss)
         g_input_batch = np.random.normal(0., 1., size=[Parm['batch_size'],  Parm['g_input_dim']])
         images = sess.run(G, {g_input: g_input_batch})
         draw_image(images[0],i)
-        #print(50*'-')
 print('Done.')
